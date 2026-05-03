@@ -264,6 +264,7 @@ def parentObject(parent, child):
     setActiveObject(parent)
     bpy.ops.object.parent_set(type="OBJECT", keep_transform=True)
 
+
 def getFMeshName(
     fModel,
     vertexGroup,

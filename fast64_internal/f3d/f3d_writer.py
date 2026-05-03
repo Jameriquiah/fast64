@@ -1888,6 +1888,7 @@ def removeDL(sourcePath, headerPath, DLName):
     if DLDataH != originalDataH:
         writeFile(headerPath, DLDataH)
 
+
 class Fast64_DLRedirectPanel(bpy.types.Panel):
     bl_idname = "FAST64_PT_f3d_redirect"
     bl_label = "F3D Exporter"

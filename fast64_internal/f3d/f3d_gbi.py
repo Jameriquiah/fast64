@@ -8,7 +8,6 @@ from html import escape
 import struct
 import re
 import bpy, os, enum, copy
-from struct import pack
 
 from ..utility import *
 
@@ -2688,7 +2687,6 @@ class FModel:
         self.meshes[final_name] = mesh = FMesh(final_name, self.DLFormat)
         self.onAddMesh(mesh, contextObj)
         return mesh
->>>>>>> hm64
 
     def onAddMesh(self, fMesh, contextObj):
         return
@@ -5083,7 +5081,6 @@ class SPClearGeometryMode(GbiMacro):
         else:
             words = _SHIFTL(f3d.G_CLEARGEOMETRYMODE, 24, 8), word
             return words[0].to_bytes(4, "big") + words[1].to_bytes(4, "big")
-
 
     def to_soh_xml(self, objectPath=""):
         if not self.flagList:
