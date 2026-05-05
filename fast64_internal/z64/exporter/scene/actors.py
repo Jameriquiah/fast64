@@ -136,14 +136,14 @@ class SceneTransitionActors:
             if entry == "":
                 continue
 
-            params = split_c_on_commas(entry.replace("{", "").replace("}", ""))
+            params = entry.replace("{", "").replace("}", "").split(",")
 
             # trailing commas
             for p in params:
                 if p == "":
                     params.remove(p)
 
-            assert len(params) == 10, entry
+            assert len(params) == 10
             trans_actor = TransitionActor()
             trans_actor.name = "(unset)"
             trans_actor.id = params[4]

@@ -28,6 +28,7 @@ from ..utility import (
     binOps,
     deselectAllObjects,
     selectSingleObject,
+    get_internal_asset_path as _get_internal_asset_path,
 )
 
 if TYPE_CHECKING:
@@ -233,6 +234,10 @@ def replaceMatchContent(data: str, newContent: str, match: re.Match, index: int)
 def addIncludeFiles(objectName, objectPath, assetName):
     addIncludeFilesExtension(objectName, objectPath, assetName, "h")
     addIncludeFilesExtension(objectName, objectPath, assetName, "c")
+
+
+def get_internal_asset_path(settings, folderName):
+    return _get_internal_asset_path(settings, folderName)
 
 
 def addIncludeFilesExtension(objectName, objectPath, assetName, extension):
@@ -845,9 +850,7 @@ def getEvalParamsInt(input: str):
     try:
         return _eval(node.body)
     except:
-        print("WARNING: something wrong happened:")
-        print("input:", input)
-        traceback.print_exc()
+        print("WARNING: something wrong happened:", traceback.print_exc())
         return None
 
 

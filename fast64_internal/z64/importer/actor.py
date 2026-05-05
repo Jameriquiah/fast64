@@ -82,7 +82,10 @@ def parseTransActorList(
 
             actorProp = transActorProp.actor
             setCustomProperty(actorProp, "actor_id", actor.id, game_data.z64.actors.ootEnumActorID)
-            set_actor_params(actorProp, actor.id, actor.params)
+            if actorProp.actor_id != "Custom":
+                actorProp.params = actor.params
+            else:
+                actorProp.params_custom = actor.params
             handleActorWithRotAsParam(actorProp, actor.id, rotation)
             unsetAllHeadersExceptSpecified(actorProp.headerSettings, headerIndex)
 
@@ -160,7 +163,10 @@ def parseSpawnList(
             spawnProp.customActor = actorID != "ACTOR_PLAYER"
             actorProp = spawnProp.actor
             setCustomProperty(actorProp, "actor_id", actorID, game_data.z64.actors.ootEnumActorID)
-            set_actor_params(actorProp, actorID, actorParam)
+            if actorProp.actor_id != "Custom":
+                actorProp.params = actorParam
+            else:
+                actorProp.params_custom = actorParam
             handleActorWithRotAsParam(actorProp, actorID, rotation)
             unsetAllHeadersExceptSpecified(actorProp.headerSettings, headerIndex)
 
@@ -198,7 +204,10 @@ def parseActorList(
             actorProp = actorObj.ootActorProperty
 
             setCustomProperty(actorProp, "actor_id", actorID, game_data.z64.actors.ootEnumActorID)
-            set_actor_params(actorProp, actorID, actorParam)
+            if actorProp.actor_id != "Custom":
+                actorProp.params = actorParam
+            else:
+                actorProp.params_custom = actorParam
             handleActorWithRotAsParam(actorProp, actorID, rotation)
             unsetAllHeadersExceptSpecified(actorProp.headerSettings, headerIndex)
 

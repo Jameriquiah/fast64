@@ -47,18 +47,11 @@ def ootGetIncludedAssetData(basePaths: list[str], currentPaths: list[str], data:
     searchedPaths = currentPaths[:]
 
     print("Included paths:")
+    extracted_path = f"{bpy.context.scene.fast64.oot.get_extracted_path()}/"
 
     # search assets
     for includeMatch in re.finditer(r"\#include\s*\"(assets/objects/(.*?)\.h)\"", data):
-        h_p = None
-        for basePath in basePaths:
-            candidate_h_p = Path(basePath) / includeMatch.group(1)
-            if candidate_h_p.exists():
-                h_p = candidate_h_p
-                break
-        if h_p is None:
-            print("Could not find included file:", includeMatch.group(1))
-            continue
+        h_p = Path(basePath) / includeMatch.group(1)
         print("", str(h_p))
         includeData += getImportData([str(h_p)]) + "\n"
         for path_p in h_p.parent.glob("*.c"):
@@ -388,6 +381,11 @@ class OOTF3DContext(F3DContext):
         self.dlList = []  # in the order they are rendered
         self.isBillboard = False
         self.flipbooks = {}  # {(segment, draw layer) : TextureFlipbook}
+        self.ignored_dl_names: set[str] = set()
+
+        # the new assets system extracts CI textures as PNGs with the TLUT already applied
+        # so we need to avoid reading TLUTs as the files don't exist outside the build folder
+        self.ignore_tlut = False
 
         # the new assets system extracts CI textures as PNGs with the TLUT already applied
         # so we need to avoid reading TLUTs as the files don't exist outside the build folder
@@ -431,6 +429,9 @@ class OOTF3DContext(F3DContext):
             try:
                 pointer = hexOrDecInt(name)
             except:
+                if name == "&gLinkHumanSheathedKokiriSwordMtx":
+                    self.matrixData[name] = mathutils.Matrix.Identity(4)
+                    self.limbToBoneName[name] = name
                 F3DContext.setCurrentTransform(self, name, flagList)
             else:
                 if pointer >> 24 == 0x01:
@@ -443,7 +444,7 @@ class OOTF3DContext(F3DContext):
         try:
             pointer = hexOrDecInt(name)
         except:
-            if name == "gEmptyDL":
+            if name == "gEmptyDL" or name in self.ignored_dl_names:
                 return None
             return name
         else:

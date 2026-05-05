@@ -11,7 +11,6 @@ from ...utility import (
     getDeclaration,
     writeFile,
     readFile,
-    setOrigin,
     getGroupNameFromIndex,
     attemptModifierApply,
     cleanupDuplicatedObjects,
@@ -319,7 +318,7 @@ def ootDuplicateArmatureAndRemoveRotations(originalArmatureObj: bpy.types.Object
 
     try:
         for obj in meshObjs:
-            setOrigin(obj, armatureObj.location)
+            setOriginAtObject(armatureObj, obj)
 
         selectSingleObject(armatureObj)
         bpy.ops.object.transform_apply(location=False, rotation=False, scale=True, properties=False)
@@ -358,7 +357,6 @@ def applySkeletonRestPose(boneData: list[tuple[float, float, float]], armatureOb
     if bpy.context.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     selectSingleObject(armatureObj)
-
     bpy.ops.object.mode_set(mode="POSE")
 
     startBoneName = getStartBone(armatureObj)
@@ -377,3 +375,16 @@ def applySkeletonRestPose(boneData: list[tuple[float, float, float]], armatureOb
 
     bpy.ops.object.mode_set(mode="OBJECT")
     bpy.ops.object.armature_apply_w_mesh()
+
+
+def setOriginAtObject(target_obj: bpy.types.Object, mesh_obj: bpy.types.Object):
+    """
+    Align mesh origin with another object's location, mirroring the legacy exporter behavior.
+    """
+    bpy.ops.object.select_all(action="DESELECT")
+    mesh_obj.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_obj
+    bpy.ops.object.transform_apply()
+    bpy.context.scene.cursor.location = target_obj.location
+    bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
+    bpy.ops.object.select_all(action="DESELECT")

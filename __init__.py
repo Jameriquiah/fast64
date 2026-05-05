@@ -38,7 +38,6 @@ from .fast64_internal.f3d.f3d_material import (
     check_or_ask_color_management,
 )
 from .fast64_internal.f3d.f3d_writer import f3d_writer_register, f3d_writer_unregister
-from .fast64_internal.f3d.f3d_parser import f3d_parser_register, f3d_parser_unregister
 from .fast64_internal.f3d.flipbook import flipbook_register, flipbook_unregister
 from .fast64_internal.f3d.op_largetexture import op_largetexture_register, op_largetexture_unregister, ui_oplargetexture
 
@@ -69,21 +68,21 @@ from .fast64_internal.gltf_extension import (
 
 # info about add on
 bl_info = {
-    "name": "Fast64",
+    "name": "Fast64 (HM64)",
     "version": (2, 5, 3),
     "author": "kurethedead",
     "location": "3DView",
-    "description": "Plugin for exporting F3D display lists and other game data related to Nintendo 64 games.",
+    "description": "Plugin for exporting F3D display lists and other game data related to Nintendo 64 games. Modified for HM64 Ship of Harkinian.",
     "category": "Import-Export",
     "blender": (3, 2, 0),
 }
 
 gameEditorEnum = (
-    ("SM64", "SM64", "Super Mario 64", 0),
+    # ("SM64", "SM64", "Super Mario 64", 0),
     ("OOT", "OOT", "Ocarina Of Time", 1),
-    # ("MM", "MM", "Majora's Mask", 4),
+    ("MM", "MM", "Majora's Mask", 4),
     ("MK64", "MK64", "Mario Kart 64", 3),
-    ("Homebrew", "Homebrew", "Homebrew", 2),
+    # ("Homebrew", "Homebrew", "Homebrew", 2),
 )
 
 
@@ -291,7 +290,17 @@ class Fast64_ObjectProperties(bpy.types.PropertyGroup):
     """
 
     sm64: bpy.props.PointerProperty(type=SM64_ObjectProperties, name="SM64 Object Properties")
-    oot: bpy.props.PointerProperty(type=OOT_ObjectProperties, name="Z64 Object Properties")  # TODO: rename oot to z64
+    oot: bpy.props.PointerProperty(type=OOT_ObjectProperties, name="Z64 Object Properties")
+    mk64: bpy.props.PointerProperty(type=MK64_ObjectProperties, name="MK64 Object Properties")
+
+
+class Fast64_CurveProperties(bpy.types.PropertyGroup):
+    """
+    Properties in object.fast64 (bpy.types.Curve)
+    All new object properties should be children of this property group.
+    """
+
+    mk64: bpy.props.PointerProperty(type=MK64_ObjectProperties, name="MK64 Curve Properties")
 
 
 class UpgradeF3DMaterialsDialog(bpy.types.Operator):
@@ -389,13 +398,6 @@ def upgrade_scene_props_node():
 
 @bpy.app.handlers.persistent
 def after_load(_a, _b):
-    # Doing some operations immediately on file load can crash blender in specific situations,
-    # so delay the post-load code execution.
-    # (note if register() is called without a delay the function just runs immediately, so we need any non-zero delay)
-    bpy.app.timers.register(after_load_impl, 0.001)
-
-
-def after_load_impl():
     game_data.update(bpy.context.scene.gameEditorMode)
 
     settings = bpy.context.scene.fast64.settings
@@ -482,15 +484,14 @@ def register():
     bsdf_conv_panel_regsiter()
     f3d_writer_register()
     flipbook_register()
-    f3d_parser_register()
     op_largetexture_register()
 
     # ROM
 
-    bpy.types.Scene.ignoreTextureRestrictions = bpy.props.BoolProperty(name="Ignore Texture Restrictions")
+    bpy.types.Scene.ignoreTextureRestrictions = bpy.props.BoolProperty(name="Ignore Texture Restrictions", default=True)
     bpy.types.Scene.fullTraceback = bpy.props.BoolProperty(name="Show Full Error Traceback", default=False)
     bpy.types.Scene.gameEditorMode = bpy.props.EnumProperty(
-        name="Game", default="SM64", items=gameEditorEnum, update=gameEditorUpdate
+        name="Game", default="OOT", items=gameEditorEnum, update=gameEditorUpdate
     )
     bpy.types.Scene.saveTextures = bpy.props.BoolProperty(name="Save Textures As PNGs (Breaks CI Textures)")
     bpy.types.Scene.exportHiddenGeometry = bpy.props.BoolProperty(name="Export Hidden Geometry", default=True)
@@ -506,6 +507,7 @@ def register():
     bpy.types.Scene.fast64 = bpy.props.PointerProperty(type=Fast64_Properties, name="Fast64 Properties")
     bpy.types.Bone.fast64 = bpy.props.PointerProperty(type=Fast64_BoneProperties, name="Fast64 Bone Properties")
     bpy.types.Object.fast64 = bpy.props.PointerProperty(type=Fast64_ObjectProperties, name="Fast64 Object Properties")
+    bpy.types.Curve.fast64 = bpy.props.PointerProperty(type=Fast64_CurveProperties, name="Fast64 Curve Properties")
     bpy.types.Action.fast64 = bpy.props.PointerProperty(type=Fast64_ActionProperties, name="Fast64 Action Properties")
     bpy.app.handlers.load_post.append(after_load)
 
@@ -516,7 +518,6 @@ def unregister():
     op_largetexture_unregister()
     flipbook_unregister()
     f3d_writer_unregister()
-    f3d_parser_unregister()
     sm64_unregister(True)
     oot_unregister(True)
     mk64_unregister(True)
