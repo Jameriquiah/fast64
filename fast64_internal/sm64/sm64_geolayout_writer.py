@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import typing
 
-import bpy, mathutils, math, copy, os, shutil, re
+import bpy, mathutils, math, copy, os, shutil, re, struct
 from bpy.utils import register_class, unregister_class
 from io import BytesIO
 
@@ -55,6 +55,7 @@ from ..utility import (
     geoNodeRotateOrder,
     deselectAllObjects,
     selectSingleObject,
+    crc64,
 )
 
 from ..f3d.f3d_bleed import (
@@ -97,6 +98,9 @@ from ..f3d.f3d_gbi import (
     DLFormat,
     SPEndDisplayList,
     SPDisplayList,
+    SPBranchList,
+    SPSetLights,
+    DPSetTextureImage,
 )
 
 from .sm64_geolayout_classes import (
@@ -121,6 +125,19 @@ from .sm64_geolayout_classes import (
     DisplayListWithOffsetNode,
     HeldObjectNode,
     Geolayout,
+    _ghostship_resource_header,
+    _ghostship_blob_resource,
+    _ghostship_asset_hash,
+)
+from .sm64_geolayout_constants import (
+    GEO_BRANCH,
+    GEO_CALL_ASM,
+    GEO_END,
+    GEO_NODE_CLOSE,
+    GEO_NODE_OPEN,
+    GEO_SCALE,
+    GEO_START_W_SHADOW,
+    GEO_SWITCH,
 )
 
 from .sm64_constants import insertableBinaryTypes, bank0Segment, defaultExtendSegment4
@@ -881,6 +898,184 @@ def saveGeolayoutC(
             write_material_headers(Path(exportDir), matCInclude, matHInclude)
 
     return staticData.header, fileStatus
+
+
+def _write_ghostship_resource(export_folder_path: str, name: str, data: bytes):
+    with open(os.path.join(export_folder_path, name), "wb") as resource_file:
+        resource_file.write(data)
+
+
+def _ghostship_hash_bytes(asset_path: str):
+    hash_val = int(crc64(asset_path.replace("\\", "/")), 16)
+    return struct.pack("<II", hash_val >> 32, hash_val & 0xFFFFFFFF)
+
+
+def _ghostship_native_words_from_big_endian(data: bytes):
+    fixed = bytearray()
+    for offset in range(0, len(data), 4):
+        fixed.extend(data[offset : offset + 4][::-1])
+    return fixed
+
+
+def _ghostship_pointer_command(command, folder_path: str):
+    return _ghostship_native_words_from_big_endian(command.toO2R(folder_path))
+
+
+def _ghostship_gbi_command(command, folder_path: str, f3d):
+    if isinstance(command, (SPVertex, SPDisplayList, SPBranchList, DPSetTextureImage)):
+        return _ghostship_pointer_command(command, folder_path)
+
+    data = command.to_binary(f3d, {})
+    if len(data) >= 8 and data[0] >= 0xE4:
+        data = _ghostship_native_words_from_big_endian(data)
+    return data
+
+
+def _ghostship_vtx_list(folder_path: str, vtx_list):
+    data = _ghostship_resource_header(0x4F565458, 0)
+    data.extend(struct.pack("<I", len(vtx_list.vertices)))
+    for vert in vtx_list.vertices:
+        data.extend(
+            struct.pack(
+                "<hhhhhhBBBB",
+                vert.position[0],
+                vert.position[1],
+                vert.position[2],
+                vert.packedNormal,
+                vert.uv[0],
+                vert.uv[1],
+                *vert.colorOrNormal,
+            )
+        )
+    return data
+
+
+def _ghostship_gfx_list(folder_path: str, gfx_list: GfxList):
+    data = _ghostship_resource_header(0x4F444C54, 0)
+    data.extend(struct.pack("<bBHI", 1, 0xFF, 0xFFFF, 0xFFFFFFFF))
+    data.extend(struct.pack("<II", 0x33 << 24, 0xBEEFBEEF))
+    data.extend(_ghostship_hash_bytes(os.path.join(folder_path, gfx_list.name)))
+
+    f3d = get_F3D_GBI()
+    for command in gfx_list.commands:
+        if isinstance(command, SPSetLights):
+            continue
+        data.extend(_ghostship_gbi_command(command, folder_path, f3d))
+    return data
+
+
+def _ghostship_gfx_list_xml(folder_path: str, gfx_list: GfxList):
+    data = '<DisplayList Version="0">\n'
+    f3d = get_F3D_GBI()
+    for command in gfx_list.commands:
+        if isinstance(command, SPSetLights):
+            continue
+        if isinstance(command, (SPVertex, SPDisplayList, SPBranchList, DPSetTextureImage)):
+            data += "\t" + command.to_soh_xml(folder_path) + "\n"
+        elif hasattr(command, "to_soh_xml"):
+            data += "\t" + command.to_soh_xml() + "\n"
+        elif hasattr(command, "mode") and hasattr(command, "is_othermodeh"):
+            raw = command.to_binary(f3d, {})
+            w0 = int.from_bytes(raw[:4], "big")
+            cmd = "G_SETOTHERMODE_H" if command.is_othermodeh else "G_SETOTHERMODE_L"
+            sft = (w0 >> 8) & 0xFF
+            length = (w0 & 0xFF) + 1
+            data += f'\t<SetOtherMode Cmd="{cmd}" Sft="{sft}" Length="{length}" {command.mode}="1"/>\n'
+        else:
+            raise PluginError(f"Ghostship XML export does not support command {command.__class__.__name__}.")
+    data += "</DisplayList>\n\n"
+    return data.encode("utf-8")
+
+
+def _ghostship_mario_root_geo(folder_path: str, body_geo_name: str):
+    body_hash = _ghostship_asset_hash(folder_path, body_geo_name)
+    data = bytearray()
+    data.extend(struct.pack("<Bhhh", GEO_START_W_SHADOW, 0x63, 0xB4, 100))
+    data.extend(struct.pack("<B", GEO_NODE_OPEN))
+    data.extend(struct.pack("<BBI", GEO_SCALE, 0, 0x4000))
+    data.extend(struct.pack("<B", GEO_NODE_OPEN))
+    data.extend(struct.pack("<BhI", GEO_CALL_ASM, 0, 0x80277D6C))
+    data.extend(struct.pack("<BhI", GEO_CALL_ASM, 0, 0x802770A4))
+    data.extend(struct.pack("<BhI", GEO_SWITCH, 0, 0x80277150))
+    data.extend(struct.pack("<B", GEO_NODE_OPEN))
+    data.extend(struct.pack("<BBQ", GEO_BRANCH, 1, body_hash))
+    data.extend(struct.pack("<BBQ", GEO_BRANCH, 1, body_hash))
+    data.extend(struct.pack("<B", GEO_NODE_CLOSE))
+    data.extend(struct.pack("<BhI", GEO_CALL_ASM, 1, 0x80277D6C))
+    data.extend(struct.pack("<B", GEO_NODE_CLOSE))
+    data.extend(struct.pack("<B", GEO_NODE_CLOSE))
+    data.extend(struct.pack("<B", GEO_END))
+    return _ghostship_blob_resource(data)
+
+
+def _save_ghostship_gfx_list(export_folder_path: str, folder_path: str, gfx_list: GfxList):
+    if gfx_list is not None and gfx_list.tag.Export:
+        _write_ghostship_resource(export_folder_path, gfx_list.name, _ghostship_gfx_list_xml(folder_path, gfx_list))
+
+
+def _save_ghostship_fmodel_resources(fModel: FModel, export_folder_path: str, folder_path: str):
+    for _, fImage in fModel.textures.items():
+        if getattr(fImage, "skip_export", False):
+            continue
+        _write_ghostship_resource(export_folder_path, fImage.name, fImage.toO2R(folder_path))
+
+    for _, (fMaterial, _) in fModel.materials.items():
+        _save_ghostship_gfx_list(export_folder_path, folder_path, fMaterial.material)
+        if fMaterial.revert is not None:
+            _save_ghostship_gfx_list(export_folder_path, folder_path, fMaterial.revert)
+
+    for _, mesh in fModel.meshes.items():
+        _save_ghostship_gfx_list(export_folder_path, folder_path, mesh.draw)
+        if mesh.cullVertexList is not None:
+            _write_ghostship_resource(
+                export_folder_path, mesh.cullVertexList.name, _ghostship_vtx_list(folder_path, mesh.cullVertexList)
+            )
+        for triGroup in mesh.triangleGroups:
+            _write_ghostship_resource(
+                export_folder_path, triGroup.vertexList.name, _ghostship_vtx_list(folder_path, triGroup.vertexList)
+            )
+            for celTriList in triGroup.celTriLists:
+                _save_ghostship_gfx_list(export_folder_path, folder_path, celTriList)
+            _save_ghostship_gfx_list(export_folder_path, folder_path, triGroup.triList)
+        for drawOverride in mesh.draw_overrides:
+            _save_ghostship_gfx_list(export_folder_path, folder_path, drawOverride)
+
+
+def saveGeolayoutGhostship(
+    geoName,
+    dirName,
+    geolayoutGraph: GeolayoutGraph,
+    fModel: FModel,
+    exportPath,
+):
+    dirName = toAlnum(dirName)
+    folder_path = f"actors/{dirName}/geo"
+    export_folder_path = os.path.join(exportPath, folder_path)
+    os.makedirs(export_folder_path, exist_ok=True)
+
+    is_mario_root = dirName == "mario" and geoName == "mario_geo"
+    geolayoutGraph.startGeolayout.name = "mario_geo_render_body" if is_mario_root else geoName
+    if is_mario_root:
+        geolayoutGraph.startGeolayout.isStartGeo = False
+    _save_ghostship_fmodel_resources(fModel, export_folder_path, folder_path)
+    for name, resource_data in geolayoutGraph.to_ghostship_otr(folder_path).items():
+        _write_ghostship_resource(export_folder_path, name, resource_data)
+    if is_mario_root:
+        _write_ghostship_resource(export_folder_path, "mario_geo", _ghostship_mario_root_geo(folder_path, "mario_geo_render_body"))
+
+    return export_folder_path
+
+
+def exportGeolayoutArmatureGhostship(armatureObj, obj, convertTransformMatrix, exportPath, dirName, geoName, DLFormat):
+    geolayoutGraph, fModel = convertArmatureToGeolayout(
+        armatureObj, obj, convertTransformMatrix, None, dirName, DLFormat, True
+    )
+    return saveGeolayoutGhostship(geoName, dirName, geolayoutGraph, fModel, exportPath)
+
+
+def exportGeolayoutObjectGhostship(obj, convertTransformMatrix, exportPath, dirName, geoName, DLFormat):
+    geolayoutGraph, fModel = convertObjectToGeolayout(obj, convertTransformMatrix, True, dirName, None, None, DLFormat, True)
+    return saveGeolayoutGhostship(geoName, dirName, geolayoutGraph, fModel, exportPath)
 
 
 # Insertable Binary
@@ -2399,9 +2594,9 @@ def saveModelGivenVertexGroup(
     fMeshes = {}
     fSkinnedMeshes = {}
     for drawLayer, materialFaces in skinnedFaces.items():
-        meshName = getFMeshName(vertexGroup, namePrefix, drawLayer, False)
+        meshName = getFMeshName(fModel, vertexGroup, namePrefix, drawLayer, False)
         checkUniqueBoneNames(fModel, meshName, vertexGroup)
-        skinnedMeshName = getFMeshName(vertexGroup, namePrefix, drawLayer, True)
+        skinnedMeshName = getFMeshName(fModel, vertexGroup, namePrefix, drawLayer, True)
         checkUniqueBoneNames(fModel, skinnedMeshName, vertexGroup)
 
         fMesh, fSkinnedMesh = saveSkinnedMeshByMaterial(
@@ -2932,6 +3127,19 @@ class SM64_ExportGeolayoutObject(ObjectDataExporter):
                     DLFormat.Static,
                 )
                 self.report({"INFO"}, "Success!")
+            elif context.scene.fast64.sm64.export_type == "Ghostship":
+                export_path = bpy.path.abspath(context.scene.geoGhostshipPath)
+                asset_folder = context.scene.geoGhostshipAssetFolder or props.obj_name_gfx
+                geolayout_name = context.scene.geoGhostshipGeoName or f"{toAlnum(asset_folder)}_geo"
+                output_path = exportGeolayoutObjectGhostship(
+                    obj,
+                    final_transform,
+                    export_path,
+                    asset_folder,
+                    geolayout_name,
+                    DLFormat.Static,
+                )
+                self.report({"INFO"}, "Success!")
             elif context.scene.fast64.sm64.export_type == "Insertable Binary":
                 exportGeolayoutObjectInsertableBinary(
                     obj,
@@ -3128,6 +3336,20 @@ class SM64_ExportGeolayoutArmature(bpy.types.Operator):
                 )
                 starSelectWarning(self, fileStatus)
                 self.report({"INFO"}, "Success!")
+            elif context.scene.fast64.sm64.export_type == "Ghostship":
+                export_path = bpy.path.abspath(context.scene.geoGhostshipPath)
+                asset_folder = context.scene.geoGhostshipAssetFolder or props.obj_name_gfx
+                geolayout_name = context.scene.geoGhostshipGeoName or f"{toAlnum(asset_folder)}_geo"
+                output_path = exportGeolayoutArmatureGhostship(
+                    armatureObj,
+                    obj,
+                    final_transform,
+                    export_path,
+                    asset_folder,
+                    geolayout_name,
+                    DLFormat.Static,
+                )
+                self.report({"INFO"}, "Success!")
             elif context.scene.fast64.sm64.export_type == "Insertable Binary":
                 exportGeolayoutArmatureInsertableBinary(
                     armatureObj,
@@ -3250,7 +3472,11 @@ class SM64_ExportGeolayoutPanel(SM64_Panel):
         propsGeoE = col.operator(SM64_ExportGeolayoutArmature.bl_idname)
         propsGeoE = col.operator(SM64_ExportGeolayoutObject.bl_idname)
         props = context.scene.fast64.sm64.combined_export
-        if context.scene.fast64.sm64.export_type == "Insertable Binary":
+        if context.scene.fast64.sm64.export_type == "Ghostship":
+            col.prop(context.scene, "geoGhostshipPath")
+            prop_split(col, context.scene, "geoGhostshipAssetFolder", "Asset Folder")
+            prop_split(col, context.scene, "geoGhostshipGeoName", "Geolayout Name")
+        elif context.scene.fast64.sm64.export_type == "Insertable Binary":
             col.prop(context.scene, "geoInsertableBinaryPath")
         else:
             prop_split(col, context.scene, "geoExportStart", "Start Address")
@@ -3308,6 +3534,11 @@ def sm64_geo_writer_register():
     bpy.types.Scene.geoRAMAddr = bpy.props.StringProperty(name="RAM Address", default="80000000")
     bpy.types.Scene.geoSeparateTextureDef = bpy.props.BoolProperty(name="Save texture.inc.c separately")
     bpy.types.Scene.geoInsertableBinaryPath = bpy.props.StringProperty(name="Filepath", subtype="FILE_PATH")
+    bpy.types.Scene.geoGhostshipPath = bpy.props.StringProperty(
+        name="Ghostship Export Path", default="//ghostship_export", subtype="DIR_PATH"
+    )
+    bpy.types.Scene.geoGhostshipAssetFolder = bpy.props.StringProperty(name="Asset Folder", default="mario")
+    bpy.types.Scene.geoGhostshipGeoName = bpy.props.StringProperty(name="Geolayout Name", default="mario_geo")
     bpy.types.Scene.geoIsSegPtr = bpy.props.BoolProperty(name="Is Segmented Address")
     bpy.types.Scene.replaceStarRefs = bpy.props.BoolProperty(
         name="Replace old DL references in other actors", default=True

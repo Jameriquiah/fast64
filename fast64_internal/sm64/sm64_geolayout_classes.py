@@ -17,6 +17,7 @@ from ..utility import (
     join_c_args,
     radians_to_s16,
     geoNodeRotateOrder,
+    crc64,
 )
 from ..f3d.f3d_bleed import BleedGraphics
 from ..f3d.f3d_gbi import FMaterial, FModel, GbiMacro, GfxList
@@ -85,6 +86,83 @@ def addFuncAddress(command, func):
         command.extend(bytes.fromhex(func))
     except ValueError:
         raise PluginError('In geolayout node, could not convert function "' + str(func) + '" to hexadecimal.')
+
+
+GHOSTSHIP_RESOURCE_TYPE_BLOB = 0x4F424C42
+
+
+def _ghostship_asset_hash(folder_path: str, name: str):
+    if name in {None, "", "NULL"}:
+        return 0
+    asset_path = f"{folder_path}/{name}".replace("\\", "/")
+    return int(crc64(asset_path), 16)
+
+
+def _ghostship_resource_header(resource_type: int, version: int = 0):
+    data = bytearray()
+    data.extend(pack("<bbbbIIQIQI", 0, 0, 0, 0, resource_type, version, 0xDEADBEEFDEADBEEF, 0, 0, 0))
+    while len(data) < 0x40:
+        data.extend(pack("<I", 0))
+    return data
+
+
+def _ghostship_blob_resource(payload: bytes):
+    data = _ghostship_resource_header(GHOSTSHIP_RESOURCE_TYPE_BLOB, 0)
+    data.extend(pack("<I", len(payload)))
+    data.extend(payload)
+    return data
+
+
+def _write_u8(data, value):
+    data.extend(pack("<B", value & 0xFF))
+
+
+def _write_s16(data, value):
+    data.extend(pack("<h", int(value)))
+
+
+def _write_u32(data, value):
+    data.extend(pack("<I", int(value) & 0xFFFFFFFF))
+
+
+def _write_u64(data, value):
+    data.extend(pack("<Q", int(value) & 0xFFFFFFFFFFFFFFFF))
+
+
+def _write_f32(data, value):
+    data.extend(pack("<f", float(value)))
+
+
+def _write_vec3s(data, values):
+    for value in values:
+        _write_s16(data, value)
+
+
+def _write_vec3f_from_s16(data, values):
+    for value in values:
+        _write_f32(data, value)
+
+
+def _func_u32(func):
+    try:
+        return int(str(func), 16)
+    except ValueError:
+        raise PluginError(f'In geolayout node, could not convert function "{func}" to hexadecimal.')
+
+
+def _is_mario_stand_run_switch(node):
+    return isinstance(node, SwitchNode) and _func_u32(node.switchFunc) == 0x80277150
+
+
+def _dl_asset_hash(node, folder_path: str):
+    if not getattr(node, "hasDL", False):
+        return 0
+    return _ghostship_asset_hash(folder_path, node.get_dl_name())
+
+
+def _geo_asset_hash(geolayout: "Geolayout | None", geo_ref: str | None, folder_path: str):
+    name = geo_ref or (geolayout.name if geolayout is not None else None)
+    return _ghostship_asset_hash(folder_path, name)
 
 
 class GeolayoutGraph:
@@ -202,6 +280,10 @@ class GeolayoutGraph:
             data += geolayout.toTextDump(segmentData) + "\n"
         return data
 
+    def to_ghostship_otr(self, folder_path: str):
+        self.checkListSorted()
+        return {geolayout.name: geolayout.to_ghostship_otr(folder_path) for geolayout in self.sortedList}
+
     def convertToDynamic(self):
         self.checkListSorted()
         for geolayout in self.sortedList:
@@ -273,6 +355,14 @@ class Geolayout:
             data += node.toTextDump(0, segmentData)
         data += endCmd + " 00 00 00\n"
         return data
+
+    def to_ghostship_otr(self, folder_path: str):
+        endCmd = GEO_END if self.isStartGeo else GEO_RETURN
+        payload = bytearray()
+        for node in self.nodes:
+            payload.extend(node.to_ghostship_binary(folder_path))
+        _write_u8(payload, endCmd)
+        return _ghostship_blob_resource(payload)
 
     def getDrawLayers(self):
         drawLayers = set()
@@ -423,6 +513,29 @@ class TransformNode:
             raise PluginError("A switch bone must have at least one child bone.")
         return data
 
+    def to_ghostship_binary(self, folder_path: str):
+        self.do_export_checks()
+        data = bytearray()
+        skip_node = self.node is not None and _is_mario_stand_run_switch(self.node)
+        if self.node is not None and not skip_node:
+            if not hasattr(self.node, "to_ghostship_binary"):
+                raise PluginError(f"Ghostship export does not support {type(self.node).__name__}.")
+            data.extend(self.node.to_ghostship_binary(folder_path))
+
+        if len(self.children) > 0:
+            if type(self.node) is FunctionNode:
+                raise PluginError("An FunctionNode cannot have children.")
+
+            if self.groups and not skip_node:
+                _write_u8(data, GEO_NODE_OPEN)
+            for child in self.children:
+                data.extend(child.to_ghostship_binary(folder_path))
+            if self.groups and not skip_node:
+                _write_u8(data, GEO_NODE_CLOSE)
+        elif type(self.node) is SwitchNode:
+            raise PluginError("A switch bone must have at least one child bone.")
+        return data
+
     def getDrawLayers(self):
         if self.node is not None and self.node.hasDL:
             drawLayers = set([self.node.drawLayer])
@@ -470,6 +583,13 @@ class JumpNode:
     def to_c(self, _depth=0):
         geo_name = self.geoRef or self.geolayout.name
         return "GEO_BRANCH(" + ("1, " if self.storeReturn else "0, ") + geo_name + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_BRANCH)
+        _write_u8(data, 1 if self.storeReturn else 0)
+        _write_u64(data, _geo_asset_hash(self.geolayout, self.geoRef, folder_path))
+        return data
 
 
 LastMaterials = dict[int, tuple[FMaterial | None, list[tuple[GfxList, dict[type, GbiMacro]]]]]
@@ -602,6 +722,13 @@ class FunctionNode:
     def to_c(self, _depth=0):
         return "GEO_ASM(" + str(self.func_param) + ", " + convert_addr_to_func(self.geo_func) + ")"
 
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_CALL_ASM)
+        _write_s16(data, int(self.func_param))
+        _write_u32(data, _func_u32(self.geo_func))
+        return data
+
 
 class HeldObjectNode:
     def __init__(self, geo_func, translate):
@@ -632,6 +759,14 @@ class HeldObjectNode:
             + ")"
         )
 
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_HELD_OBJECT)
+        _write_u32(data, _func_u32(self.geo_func))
+        _write_u8(data, 0)
+        _write_vec3s(data, [convertFloatToShort(value) for value in self.translate])
+        return data
+
 
 class StartNode:
     def __init__(self):
@@ -647,6 +782,11 @@ class StartNode:
     def to_c(self, _depth=0):
         return "GEO_NODE_START()"
 
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_START)
+        return data
+
 
 class EndNode:
     def __init__(self):
@@ -661,6 +801,11 @@ class EndNode:
 
     def to_c(self, _depth=0):
         return "GEO_END()"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_END)
+        return data
 
 
 # Geolayout node hierarchy is first generated without material/draw layer
@@ -686,6 +831,13 @@ class SwitchNode:
 
     def to_c(self, _depth=0):
         return "GEO_SWITCH_CASE(" + str(self.defaultCase) + ", " + convert_addr_to_func(self.switchFunc) + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SWITCH)
+        _write_s16(data, int(self.defaultCase))
+        _write_u32(data, _func_u32(self.switchFunc))
+        return data
 
 
 class TranslateRotateNode(BaseDisplayListNode):
@@ -790,6 +942,25 @@ class TranslateRotateNode(BaseDisplayListNode):
                 str(convertEulerFloatToShort(self.rotate.to_euler(geoNodeRotateOrder)[1])),
             )
 
+    def to_ghostship_binary(self, folder_path: str):
+        params = ((1 if self.hasDL else 0) << 7) | (self.fieldLayout << 4) | int(self.drawLayer)
+        rotation = self.rotate.to_euler(geoNodeRotateOrder)
+        data = bytearray()
+        _write_u8(data, GEO_TRANSLATE_ROTATE)
+        _write_u8(data, params)
+        if self.fieldLayout == 0:
+            _write_vec3s(data, [convertFloatToShort(value) for value in self.translate])
+            _write_vec3s(data, [convertEulerFloatToShort(value) for value in rotation])
+        elif self.fieldLayout == 1:
+            _write_vec3s(data, [convertFloatToShort(value) for value in self.translate])
+        elif self.fieldLayout == 2:
+            _write_vec3s(data, [convertEulerFloatToShort(value) for value in rotation])
+        elif self.fieldLayout == 3:
+            _write_s16(data, convertEulerFloatToShort(rotation.y))
+        if self.hasDL:
+            _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
+
 
 class TranslateNode(BaseDisplayListNode):
     def __init__(self, drawLayer, useDeform, translate, dlRef: str = None):
@@ -829,6 +1000,16 @@ class TranslateNode(BaseDisplayListNode):
             str(convertFloatToShort(self.translate[1])),
             str(convertFloatToShort(self.translate[2])),
         )
+
+    def to_ghostship_binary(self, folder_path: str):
+        params = ((1 if self.hasDL else 0) << 7) | int(self.drawLayer)
+        data = bytearray()
+        _write_u8(data, GEO_TRANSLATE)
+        _write_u8(data, params)
+        _write_vec3s(data, [convertFloatToShort(value) for value in self.translate])
+        if self.hasDL:
+            _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
 
 
 class RotateNode(BaseDisplayListNode):
@@ -872,6 +1053,16 @@ class RotateNode(BaseDisplayListNode):
             str(convertEulerFloatToShort(self.rotate.to_euler(geoNodeRotateOrder)[2])),
         )
 
+    def to_ghostship_binary(self, folder_path: str):
+        params = ((1 if self.hasDL else 0) << 7) | int(self.drawLayer)
+        data = bytearray()
+        _write_u8(data, GEO_ROTATE)
+        _write_u8(data, params)
+        _write_vec3s(data, [convertEulerFloatToShort(value) for value in self.rotate.to_euler(geoNodeRotateOrder)])
+        if self.hasDL:
+            _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
+
 
 class BillboardNode(BaseDisplayListNode):
     dl_ext = "AND_DL"
@@ -913,6 +1104,16 @@ class BillboardNode(BaseDisplayListNode):
             str(convertFloatToShort(self.translate[2])),
         )
 
+    def to_ghostship_binary(self, folder_path: str):
+        params = ((1 if self.hasDL else 0) << 7) | int(self.drawLayer)
+        data = bytearray()
+        _write_u8(data, GEO_BILLBOARD)
+        _write_u8(data, params)
+        _write_vec3s(data, [convertFloatToShort(value) for value in self.translate])
+        if self.hasDL:
+            _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
+
 
 class DisplayListNode(BaseDisplayListNode):
     def __init__(self, drawLayer, dlRef: str = None):
@@ -944,6 +1145,13 @@ class DisplayListNode(BaseDisplayListNode):
         args = [getDrawLayerName(self.drawLayer), self.get_dl_name()]
         return f"GEO_DISPLAY_LIST({join_c_args(args)})"
 
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_LOAD_DL)
+        _write_u8(data, int(self.drawLayer))
+        _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
+
 
 class ShadowNode:
     def __init__(self, shadow_type, shadow_solidity, shadow_scale):
@@ -966,6 +1174,14 @@ class ShadowNode:
         return (
             "GEO_SHADOW(" + str(self.shadowType) + ", " + str(self.shadowSolidity) + ", " + str(self.shadowScale) + ")"
         )
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_START_W_SHADOW)
+        _write_s16(data, self.shadowType)
+        _write_s16(data, self.shadowSolidity)
+        _write_s16(data, self.shadowScale)
+        return data
 
 
 class ScaleNode(BaseDisplayListNode):
@@ -1000,6 +1216,16 @@ class ScaleNode(BaseDisplayListNode):
             "GEO_SCALE", getDrawLayerName(self.drawLayer), str(int(round(self.scaleValue * 0x10000)))
         )
 
+    def to_ghostship_binary(self, folder_path: str):
+        params = ((1 if self.hasDL else 0) << 7) | int(self.drawLayer)
+        data = bytearray()
+        _write_u8(data, GEO_SCALE)
+        _write_u8(data, params)
+        _write_u32(data, int(self.scaleValue * 0x10000))
+        if self.hasDL:
+            _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
+
 
 class StartRenderAreaNode:
     def __init__(self, cullingRadius):
@@ -1020,6 +1246,12 @@ class StartRenderAreaNode:
         # 	raise PluginError("A render area node has a culling radius that does not fit an s16.\n Radius is " +\
         # 		str(cullingRadius) + ' when converted to SM64 units.')
         return "GEO_CULLING_RADIUS(" + str(convertFloatToShort(self.cullingRadius)) + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_START_W_RENDERAREA)
+        _write_s16(data, convertFloatToShort(self.cullingRadius))
+        return data
 
 
 class RenderRangeNode:
@@ -1044,6 +1276,13 @@ class RenderRangeNode:
         # 	raise PluginError("A render range (LOD) node has a range that does not fit an s16.\n Range is " +\
         # 		str(minDist) + ', ' + str(maxDist) + ' when converted to SM64 units.')
         return "GEO_RENDER_RANGE(" + str(minDist) + ", " + str(maxDist) + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SET_RENDER_RANGE)
+        _write_s16(data, convertFloatToShort(self.minDist))
+        _write_s16(data, convertFloatToShort(self.maxDist))
+        return data
 
 
 class DisplayListWithOffsetNode(BaseDisplayListNode):
@@ -1082,6 +1321,14 @@ class DisplayListWithOffsetNode(BaseDisplayListNode):
             self.get_dl_name(),  # This node requires 'NULL' if there is no DL
         ]
         return f"GEO_ANIMATED_PART({join_c_args(args)})"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_LOAD_DL_W_OFFSET)
+        _write_u8(data, int(self.drawLayer))
+        _write_vec3s(data, [convertFloatToShort(value) for value in self.translate])
+        _write_u64(data, _dl_asset_hash(self, folder_path))
+        return data
 
 
 class ScreenAreaNode:
@@ -1127,6 +1374,19 @@ class ScreenAreaNode:
                 + ")"
             )
 
+    def to_ghostship_binary(self, folder_path: str):
+        position = [160, 120] if self.useDefaults else self.position
+        dimensions = [160, 120] if self.useDefaults else self.dimensions
+        entryMinus2Count = 0xA if self.useDefaults else self.entryMinus2Count
+        data = bytearray()
+        _write_u8(data, GEO_SET_RENDER_AREA)
+        _write_s16(data, entryMinus2Count)
+        _write_s16(data, position[0])
+        _write_s16(data, position[1])
+        _write_s16(data, dimensions[0])
+        _write_s16(data, dimensions[1])
+        return data
+
 
 class OrthoNode:
     def __init__(self, scale):
@@ -1144,6 +1404,12 @@ class OrthoNode:
 
     def to_c(self, _depth=0):
         return "GEO_NODE_ORTHO(" + format(self.scale, ".4f") + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SET_ORTHO)
+        _write_s16(data, int(self.scale))
+        return data
 
 
 class FrustumNode:
@@ -1181,6 +1447,17 @@ class FrustumNode:
                 + ", geo_camera_fov)"
             )
 
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SET_CAMERA_FRUSTRUM)
+        _write_u8(data, 1 if self.useFunc else 0)
+        _write_s16(data, int(self.fov))
+        _write_s16(data, self.near)
+        _write_s16(data, self.far)
+        if self.useFunc:
+            _write_u32(data, 0x8029AA3C)
+        return data
+
 
 class ZBufferNode:
     def __init__(self, enable):
@@ -1196,6 +1473,12 @@ class ZBufferNode:
 
     def to_c(self, _depth=0):
         return "GEO_ZBUFFER(" + ("1" if self.enable else "0") + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SET_Z_BUF)
+        _write_u8(data, 1 if self.enable else 0)
+        return data
 
 
 class CameraNode:
@@ -1242,6 +1525,15 @@ class CameraNode:
             + ")"
         )
 
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_CAMERA)
+        _write_s16(data, self.camType)
+        _write_vec3f_from_s16(data, self.position)
+        _write_vec3f_from_s16(data, self.lookAt)
+        _write_u32(data, _func_u32(self.geo_func))
+        return data
+
 
 class RenderObjNode:
     def __init__(self):
@@ -1257,6 +1549,11 @@ class RenderObjNode:
 
     def to_c(self, _depth=0):
         return "GEO_RENDER_OBJ()"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SETUP_OBJ_RENDER)
+        return data
 
 
 class BackgroundNode:
@@ -1283,6 +1580,13 @@ class BackgroundNode:
             return "GEO_BACKGROUND_COLOR(0x" + format(self.backgroundValue, "04x").upper() + ")"
         else:
             return "GEO_BACKGROUND(" + str(self.backgroundValue) + ", " + convert_addr_to_func(self.geo_func) + ")"
+
+    def to_ghostship_binary(self, folder_path: str):
+        data = bytearray()
+        _write_u8(data, GEO_SET_BG)
+        _write_s16(data, self.backgroundValue)
+        _write_u32(data, 0 if self.isColor else _func_u32(self.geo_func))
+        return data
 
 
 nodeGroupClasses = [
