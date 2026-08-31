@@ -1569,27 +1569,61 @@ class F3DContext:
             print("Invalid LUT Indices detected.")
 
     def getVertexDataStart(self, vertexDataParam: str, f3d: F3D):
-        matchResult = re.search(r"\&?([A-Za-z0-9\_]*)\s*(\[([^\]]*)\])?\s*(\+(.*))?", vertexDataParam)
+        def has_balanced_parentheses(value: str) -> bool:
+            depth = 0
+            for char in value:
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth < 0:
+                        return False
+            return depth == 0
+
+        param = re.sub(r"/\*.*?\*/", "", vertexDataParam).strip()
+
+        while param.startswith("(") and param.endswith(")"):
+            inner = param[1:-1].strip()
+            if not inner or not has_balanced_parentheses(inner):
+                break
+            param = inner
+
+        cast_match = re.match(r"^\(\s*[A-Za-z_][A-Za-z0-9_\s\*]*\)\s*(.+)$", param)
+        while cast_match is not None:
+            param = cast_match.group(1).strip()
+            cast_match = re.match(r"^\(\s*[A-Za-z_][A-Za-z0-9_\s\*]*\)\s*(.+)$", param)
+
+        matchResult = re.search(r"\&?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[([^\]]*)\])?\s*(?:\+\s*(.*))?$", param)
         if matchResult is None:
             raise PluginError("SPVertex param " + vertexDataParam + " is malformed.")
 
         offset = 0
+        uses_byte_addressing = re.search(r"\(\s*u8\s*\*\s*\)", vertexDataParam) is not None
 
+        if matchResult.group(2):
+            offset += math_eval(matchResult.group(2), f3d)
         if matchResult.group(3):
             offset += math_eval(matchResult.group(3), f3d)
-        if matchResult.group(5):
-            offset += math_eval(matchResult.group(5), f3d)
+
+        if uses_byte_addressing:
+            if offset % 16 != 0:
+                raise PluginError(f"Vertex data offset is not aligned to sizeof(Vtx): {vertexDataParam}")
+            offset //= 16
 
         return matchResult.group(1), offset
 
     def getVertexSegmentData(self, segment: str, count: str, start: str, vertOverride: type[F3DVert] = F3DVert) -> None:
         raise NotImplementedError(f"Importing vertices from segments is not supported. Vertex List: {segment}")
 
-    def processCommands(self, dlData: str, dlName: str, dlCommands: "list[ParsedMacro]"):
+    def processCommands(self, dlData: str, dlName: str, dlCommands: "list[ParsedMacro]", geometryStartIndex: int = 0):
         callStack = [F3DParsedCommands(dlName, dlCommands, 0)]
+        collectGeometryStack = [geometryStartIndex <= 0]
         while len(callStack) > 0:
             currentCommandList = callStack[-1]
+            if len(callStack) == 1 and not collectGeometryStack[0] and currentCommandList.index >= geometryStartIndex:
+                collectGeometryStack[0] = True
             command = currentCommandList.currentCommand()
+            collectGeometry = collectGeometryStack[-1]
 
             if currentCommandList.index >= len(currentCommandList.commands):
                 raise PluginError("Cannot handle unterminated static display lists: " + currentCommandList.name)
@@ -1608,9 +1642,11 @@ class F3DContext:
             elif command.name == "gsSPPopMatrix":
                 print("gsSPPopMatrix not handled.")
             elif command.name == "gsSP1Triangle":
-                self.addTriangle(command.params[0:3], dlData)
+                if collectGeometry:
+                    self.addTriangle(command.params[0:3], dlData)
             elif command.name == "gsSP2Triangles":
-                self.addTriangle(command.params[0:3] + command.params[4:7], dlData)
+                if collectGeometry:
+                    self.addTriangle(command.params[0:3] + command.params[4:7], dlData)
             elif command.name == "gsSPDisplayList" or command.name.startswith("gsSPBranch"):
                 newDLName = self.processDLName(command.params[0])
                 if newDLName is not None:
@@ -1619,11 +1655,15 @@ class F3DContext:
                     parsedCommands = F3DParsedCommands(newDLName, newDLCommands, -1)
                     if command.name == "gsSPDisplayList":
                         callStack.append(parsedCommands)
+                        collectGeometryStack.append(collectGeometry)
                     elif command.name.startswith("gsSPBranch"):  # TODO: Handle BranchZ?
                         callStack = callStack[:-1]
+                        collectGeometryStack = collectGeometryStack[:-1]
                         callStack.append(parsedCommands)
+                        collectGeometryStack.append(collectGeometry)
             elif command.name == "gsSPEndDisplayList":
                 callStack = callStack[:-1]
+                collectGeometryStack = collectGeometryStack[:-1]
 
             # Should we parse commands into f3d_gbi classes?
             # No, because some parsing involves reading C files, which is separate.
@@ -1742,7 +1782,7 @@ class F3DContext:
                 elif command.name == "gsDPSetTextureImage":
                     # Are other params necessary?
                     # The params are set in SetTile commands.
-                    self.currentTextureName = command.params[3]
+                    self.currentTextureName = self.processTextureName(command.params[3])
                 elif command.name == "gsDPSetCombineMode":
                     self.setCombineMode(command)
                 elif command.name == "gsDPSetCombineLERP":
@@ -1871,6 +1911,10 @@ class F3DContext:
     # return None to indicate DL call should be skipped.
     def processDLName(self, name: str) -> Optional[str]:
         return name
+
+    # override this to handle game specific texture symbol references.
+    def processTextureName(self, textureName: str) -> str:
+        return textureName
 
     def deleteMaterialContext(self):
         if self.materialContext is not None:

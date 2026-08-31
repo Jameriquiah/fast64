@@ -30,6 +30,13 @@ def resolve_internal_export_path(export_path: str, internal_path: str, file_name
         return os.path.join(export_path, file_name)
 
     export_path_obj = Path(export_path)
+    export_parts = tuple(part.lower() for part in export_path_obj.parts)
+    internal_parts = tuple(part.lower() for part in Path(internal_clean).parts)
+
+    if internal_parts:
+        if len(export_parts) >= len(internal_parts) and export_parts[-len(internal_parts) :] == internal_parts:
+            return str(export_path_obj / file_name)
+
     base_dir = export_path_obj
     while base_dir.name not in {"objects", "assets"} and base_dir != base_dir.parent:
         base_dir = base_dir.parent

@@ -3150,7 +3150,7 @@ class Light:
         return self.color == other.color and self.normal == other.normal
 
     def __hash__(self):
-        return hash((self.color[:], self.normal[:]))
+        return hash((tuple(self.color), tuple(self.normal)))
 
     def to_binary(self):
         return bytearray(self.color + [0x00] + self.color + [0x00] + self.normal + [0x00] + [0x00] * 4)
@@ -3169,7 +3169,7 @@ class Ambient:
         return self.color == other.color
 
     def __hash__(self):
-        return hash(self.color[:])
+        return hash(tuple(self.color))
 
     def to_binary(self):
         return bytearray(self.color + [0x00] + self.color + [0x00])

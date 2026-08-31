@@ -29,6 +29,7 @@ from .fast64_internal.utility_anim import utility_anim_register, utility_anim_un
 
 from .fast64_internal.mk64 import MK64_Properties, mk64_register, mk64_unregister
 from .fast64_internal.mk64.mk64_constants import mk64_world_defaults
+from .fast64_internal.ssb64 import SSB64_Properties, ssb64_register, ssb64_unregister
 from .fast64_internal.hm64.bk64.bk64_constants import bk64_world_defaults
 
 from .fast64_internal.f3d.f3d_gbi import get_F3D_GBI
@@ -84,6 +85,7 @@ gameEditorEnum = (
     ("OOT", "OOT", "Ocarina Of Time", 1),
     # ("MM", "MM", "Majora's Mask", 4),
     ("MK64", "MK64", "Mario Kart 64", 3),
+    ("SSB64", "SSB64", "Super Smash Bros. 64", 4),
     ("BK64", "BK64", "Banjo-Kazooie", 5),
     ("Homebrew", "Homebrew", "Homebrew", 2),
 )
@@ -273,6 +275,7 @@ class Fast64_Properties(bpy.types.PropertyGroup):
     sm64: bpy.props.PointerProperty(type=SM64_Properties, name="SM64 Properties")
     oot: bpy.props.PointerProperty(type=OOT_Properties, name="OOT Properties")
     mk64: bpy.props.PointerProperty(type=MK64_Properties, name="MK64 Properties")
+    ssb64: bpy.props.PointerProperty(type=SSB64_Properties, name="SSB64 Properties")
     settings: bpy.props.PointerProperty(type=Fast64Settings_Properties, name="Fast64 Settings")
     renderSettings: bpy.props.PointerProperty(type=Fast64RenderSettings_Properties, name="Fast64 Render Settings")
 
@@ -369,6 +372,7 @@ def upgrade_changed_props():
     SM64_Properties.upgrade_changed_props()
     OOT_Properties.upgrade_changed_props()
     MK64_Properties.upgrade_changed_props()
+    SSB64_Properties.upgrade_changed_props()
     SM64_ObjectProperties.upgrade_changed_props()
     SM64_BoneProperties.upgrade_changed_props()
     OOT_ObjectProperties.upgrade_changed_props()
@@ -433,6 +437,8 @@ def set_game_defaults(scene: bpy.types.Scene, set_ucode=True):
             f3d_type, world_defaults = "F3DEX2/LX2", oot_world_defaults
         case "MK64":
             f3d_type, world_defaults = "F3DEX/LX", mk64_world_defaults
+        case "SSB64":
+            f3d_type, world_defaults = "F3DEX2/LX2", {}
         case "BK64":
             f3d_type, world_defaults = "F3DEX/LX", bk64_world_defaults
         case "Homebrew":
@@ -480,6 +486,7 @@ def register():
     sm64_register(True)
     oot_register(True)
     mk64_register(True)
+    ssb64_register(True)
 
     gltf_extension_register()
 
@@ -535,6 +542,7 @@ def unregister():
     sm64_unregister(True)
     oot_unregister(True)
     mk64_unregister(True)
+    ssb64_unregister(True)
     mat_unregister()
     gltf_extension_unregister()
     bsdf_conv_unregister()
