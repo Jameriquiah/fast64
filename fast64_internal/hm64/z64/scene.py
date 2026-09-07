@@ -27,14 +27,17 @@ from ...data.z64.data import (
 )
 from ...z64.exporter import SceneExport
 from ...z64.exporter.room import shape as room_shape_exporter
+from ...z64.exporter.utility import Utility
 from ...z64.scene.operators import OOT_ExportScene
+from ...z64.scene import operators as scene_operators
 from ...z64.scene.properties import OOTExportSceneSettingsProperty
-from ...z64.utility import getEvalParamsInt, ootSceneDungeons, sceneNameFromID
+from ...z64.utility import getEvalParamsInt, getObjectList, ootSceneDungeons, sceneNameFromID
 from ..f3d.soh_xml_exporter import register as ensure_hm64_soh_xml
 from ..f3d.f3d_texture_writer_hm64 import register as ensure_hm64_texture_writer
 from ..f3d.hm64_f3d_writer import TriangleConverterInfo, getInfoDict, saveStaticModel
 from ..utility import is_hm64, writeXMLData
 from .o2r_import import get_hm64_o2r_source, normalize_o2r_path, _resource_type
+from .o2r_object_ids import O2R_OBJECT_IDS
 
 
 _RESOURCE_HEADER_SIZE = 0x40
@@ -42,6 +45,7 @@ _RESOURCE_MAGIC = 0xDEADBEEFDEADBEEF
 _OOT_ACTORS = None
 _oot_actor_ids = None
 _HM64_SCENE_IS_OOT = True
+_HM64_ACTOR_REF = "_hm64_o2r_actor_ref"
 _SCENE_ENUMS = (
     oot_enum_skybox,
     oot_enum_skybox_config,
@@ -366,7 +370,6 @@ def _write_collision(collision) -> bytes:
 
 
 def _write_pathways(pathways) -> bytes:
-    """Serialize Fast64's per-header path array as Shipwright's OPTH resource."""
     writer = _Writer(b"HTPO")
     writer.u32(len(pathways.pathList))
     for path in pathways.pathList:
@@ -406,7 +409,13 @@ def _write_alternate_headers(writer: _Writer, paths: list[str | None]):
 
 
 def _write_room_header(
-    header, shape_type, groups, alternate_paths: list[str | None] | None = None, source_header: bytes | None = None
+    header,
+    shape_type,
+    groups,
+    alternate_paths: list[str | None] | None = None,
+    source_header: bytes | None = None,
+    actor_objects=None,
+    source_indices: set[int] | None = None,
 ) -> bytes:
     infos = header.infos
     writer = _Writer(b"MORO")
@@ -414,9 +423,7 @@ def _write_room_header(
     source_wind = source_commands.get(_CMD["WIND"])
     source_objects = source_commands.get(_CMD["OBJECTS"])
     source_actors = _source_entries(source_commands.get(_CMD["ACTORS"]), 16)
-    actors = list(header.actors.actorList)
-    if len(actors) < len(source_actors):
-        actors.extend(source_actors[len(actors) :])
+    actors = _merge_room_actors(source_actors, header.actors.actorList, actor_objects or [], source_indices or set())
     writer.u32(8 + int(alternate_paths is not None) + int(source_wind is not None and len(source_wind) == 4))
     if alternate_paths is not None:
         _write_alternate_headers(writer, alternate_paths)
@@ -440,16 +447,10 @@ def _write_room_header(
         writer.command(_CMD["WIND"])
         writer.data.extend(source_wind)
     writer.command(_CMD["OBJECTS"])
-    if (
-        source_objects is not None
-        and len(source_objects) >= 4
-        and len(source_objects) == 4 + struct.unpack_from("<I", source_objects)[0] * 2
-    ):
-        writer.data.extend(source_objects)
-    else:
-        writer.u32(len(header.objects.objectList))
-        for object_id in header.objects.objectList:
-            writer.u16(_number(object_id, "object ID"))
+    object_ids = _merge_room_objects(source_objects, header.objects.objectList)
+    writer.u32(len(object_ids))
+    for object_id in object_ids:
+        writer.u16(object_id)
     writer.command(_CMD["ACTORS"])
     writer.u32(len(actors))
     for actor in actors:
@@ -483,7 +484,12 @@ def _room_header_variants(room):
 
 
 def _write_room(
-    room, directory: str, internal_directory: str, source_headers: list[bytes | None] | None = None
+    room,
+    directory: str,
+    internal_directory: str,
+    source_headers: list[bytes | None] | None = None,
+    actor_objects_by_header: dict[int, list] | None = None,
+    source_indices_by_header: dict[int, set[int]] | None = None,
 ) -> dict[str, bytes]:
     shape_type, groups = _room_mesh_groups(room, directory, internal_directory)
     headers = _room_header_variants(room)
@@ -492,6 +498,8 @@ def _write_room(
         for index, header in enumerate(headers[1:], 1)
     ]
     source_headers = source_headers or []
+    actor_objects_by_header = actor_objects_by_header or {}
+    source_indices_by_header = source_indices_by_header or {}
     files = {
         room.name: _write_room_header(
             room.mainHeader,
@@ -499,12 +507,19 @@ def _write_room(
             groups,
             paths if len(headers) > 1 else None,
             source_headers[0] if source_headers else None,
+            actor_objects_by_header.get(0),
+            source_indices_by_header.get(0),
         )
     }
     for index, header in enumerate(headers[1:], 1):
         if header is not None:
             files[f"{room.name}Header_{index:02}"] = _write_room_header(
-                header, shape_type, groups, source_header=source_headers[index] if index < len(source_headers) else None
+                header,
+                shape_type,
+                groups,
+                source_header=source_headers[index] if index < len(source_headers) else None,
+                actor_objects=actor_objects_by_header.get(index),
+                source_indices=source_indices_by_header.get(index),
             )
     return files
 
@@ -593,6 +608,76 @@ def _source_entries(payload: bytes | None, entry_size: int) -> list[bytes]:
     if len(payload) != 4 + count * entry_size:
         return []
     return [payload[4 + index * entry_size : 4 + (index + 1) * entry_size] for index in range(count)]
+
+
+def _merge_room_objects(source_objects: bytes | None, object_names) -> list[int]:
+    object_ids = [struct.unpack("<H", entry)[0] for entry in _source_entries(source_objects, 2)]
+    for object_name in object_names:
+        object_id = O2R_OBJECT_IDS.get(str(object_name))
+        if object_id is None:
+            try:
+                object_id = hexOrDecInt(str(object_name))
+            except ValueError:
+                continue
+        if object_id not in object_ids:
+            object_ids.append(object_id)
+    return object_ids
+
+
+def _room_actor_objects(scene_obj, room_obj, header_index: int):
+    actors = getObjectList(
+        scene_obj.children,
+        "EMPTY",
+        "Actor",
+        parentObj=room_obj,
+        room_index=room_obj.ootRoomHeader.roomIndex,
+    )
+    return [
+        actor
+        for actor in actors
+        if actor.ootActorProperty.actor_id != "None"
+        and Utility.isCurrentHeaderValid(actor.ootActorProperty.headerSettings, header_index)
+    ]
+
+
+def _exported_source_actor_indices(actors, actor_objects) -> set[int]:
+    indices = set()
+    for actor_obj in actor_objects[: len(actors)]:
+        ref = actor_obj.get(_HM64_ACTOR_REF)
+        if not isinstance(ref, str):
+            continue
+        try:
+            indices.add(int(ref.rsplit(":", 1)[1]))
+        except ValueError:
+            continue
+    return indices
+
+
+def _merge_room_actors(source_actors: list[bytes], actors, actor_objects, source_indices: set[int]):
+    if not any(actor_obj.get(_HM64_ACTOR_REF) for actor_obj in actor_objects):
+        actors = list(actors)
+        if len(actors) < len(source_actors):
+            actors.extend(source_actors[len(actors) :])
+        return actors
+    ordered = [None] * len(source_actors)
+    appended = []
+    for actor, actor_obj in zip(actors, actor_objects):
+        ref = actor_obj.get(_HM64_ACTOR_REF)
+        if isinstance(ref, str):
+            try:
+                room_index, header_index, source_index = (int(value) for value in ref.split(":"))
+            except ValueError:
+                source_index = -1
+        else:
+            source_index = -1
+        if 0 <= source_index < len(ordered) and ordered[source_index] is None:
+            ordered[source_index] = actor
+        else:
+            appended.append(actor)
+    for index, source_actor in enumerate(source_actors):
+        if ordered[index] is None and index not in source_indices:
+            ordered[index] = source_actor
+    return [actor for actor in ordered if actor is not None] + appended
 
 
 def _write_scene_header(
@@ -806,6 +891,17 @@ def _base_room_header_resources(internal_directory: str, room_name: str, archive
     return [archive.file(header_path) if header_path else None for header_path in paths]
 
 
+def _tag_imported_room_actors(scene_obj, internal_directory: str, archive):
+    for room_obj in (obj for obj in scene_obj.children if obj.type == "EMPTY" and obj.ootEmptyType == "Room"):
+        source_headers = _base_room_header_resources(internal_directory, room_obj.name, archive)
+        for header_index, source_header in enumerate(source_headers):
+            source_actors = _source_entries(_header_commands(source_header).get(_CMD["ACTORS"]), 16)
+            actor_objects = _room_actor_objects(scene_obj, room_obj, header_index)
+            indices = list(range(min(len(actor_objects), len(source_actors))))
+            for actor_obj, source_index in zip(actor_objects, indices):
+                actor_obj[_HM64_ACTOR_REF] = f"{room_obj.ootRoomHeader.roomIndex}:{header_index}:{source_index}"
+
+
 def _reference_archive(archive):
     while archive.fallbacks:
         archive = archive.fallbacks[0]
@@ -894,7 +990,31 @@ def export_hm64_scene(scene_obj, transform, settings):
             if reference_archive is None
             else _base_room_header_resources(internal_directory, room.name, reference_archive)
         )
-        for name, data in _write_room(room, str(directory), internal_directory, source_room_headers).items():
+        room_obj = next(
+            (
+                obj
+                for obj in scene_obj.children
+                if obj.type == "EMPTY" and obj.ootEmptyType == "Room" and obj.ootRoomHeader.roomIndex == room.roomIndex
+            ),
+            None,
+        )
+        actor_objects_by_header = {}
+        source_indices_by_header = {}
+        if room_obj is not None:
+            for header_index, header in enumerate(_room_header_variants(room)):
+                if header is not None:
+                    actor_objects_by_header[header_index] = _room_actor_objects(scene_obj, room_obj, header_index)
+                    source_indices_by_header[header_index] = _exported_source_actor_indices(
+                        header.actors.actorList, actor_objects_by_header[header_index]
+                    )
+        for name, data in _write_room(
+            room,
+            str(directory),
+            internal_directory,
+            source_room_headers,
+            actor_objects_by_header,
+            source_indices_by_header,
+        ).items():
             (directory / name).write_bytes(data)
     (directory / f"{scene_name}CollisionHeader").write_bytes(_write_collision(exported_scene.colHeader))
     pathway_paths = []
@@ -949,6 +1069,22 @@ def export_hm64_scene(scene_obj, transform, settings):
 
 _original_export_execute = None
 _original_draw_props = None
+_original_import_scene = None
+
+
+def _hm64_import_scene(settings, option):
+    result = _original_import_scene(settings, option)
+    if not is_hm64() or not (bpy.context.scene.hm64_o2r_path or "").strip() or option == "Custom":
+        return result
+    scene_obj = bpy.context.scene.ootSceneExportObj
+    if scene_obj is None:
+        return result
+    level_name = sceneNameFromID(option)
+    scene_name = f"{toAlnum(level_name)}_scene"
+    category = "nonmq" if level_name in ootSceneDungeons else "shared"
+    source = get_hm64_o2r_source(bpy.context.scene).archive
+    _tag_imported_room_actors(scene_obj, f"scenes/{category}/{scene_name}", _reference_archive(source))
+    return result
 
 
 def _hm64_export_execute(self, context):
@@ -980,27 +1116,30 @@ def _hm64_draw_props(self, layout):
         return _original_draw_props(self, layout)
     prop_split(layout, self, "option", "Scene ID")
     prop_split(layout, self, "exportPath", "Directory")
-    layout.label(text="Exports a Shipwright scene replacement.")
     prop_split(layout, bpy.context.scene, "ootSceneExportObj", "Scene Object")
     prop_split(layout, bpy.context.scene, "hm64_o2r_path", "Base O2R")
     layout.prop(self, "auto_add_room_objects")
 
 
 def register():
-    global _original_export_execute, _original_draw_props
+    global _original_export_execute, _original_draw_props, _original_import_scene
     if _original_export_execute is not None:
         return
     _original_export_execute = OOT_ExportScene.execute
     _original_draw_props = OOTExportSceneSettingsProperty.draw_props
+    _original_import_scene = scene_operators.parseScene
     OOT_ExportScene.execute = _hm64_export_execute
     OOTExportSceneSettingsProperty.draw_props = _hm64_draw_props
+    scene_operators.parseScene = _hm64_import_scene
 
 
 def unregister():
-    global _original_export_execute, _original_draw_props
+    global _original_export_execute, _original_draw_props, _original_import_scene
     if _original_export_execute is None:
         return
     OOT_ExportScene.execute = _original_export_execute
     OOTExportSceneSettingsProperty.draw_props = _original_draw_props
+    scene_operators.parseScene = _original_import_scene
     _original_export_execute = None
     _original_draw_props = None
+    _original_import_scene = None
