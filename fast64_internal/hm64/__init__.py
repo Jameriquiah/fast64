@@ -13,6 +13,7 @@ def hm64_register():
     from .z64.skeleton import register as register_z64_skeleton
     from .z64.model_classes_hm64 import register as register_z64_model_classes_hm64
     from .z64.o2r_import import register as register_z64_o2r_import
+    from .z64.scene import register as register_z64_scene
 
     register_f3d_gbi_hm64()
     register_f3d_material_hm64()
@@ -24,6 +25,7 @@ def hm64_register():
     register_z64_panels()
     register_z64_model_classes_hm64()
     register_z64_o2r_import()
+    register_z64_scene()
 
 
 def hm64_unregister():
@@ -37,7 +39,9 @@ def hm64_unregister():
     from .z64.skeleton import unregister as unregister_z64_skeleton
     from .z64.model_classes_hm64 import unregister as unregister_z64_model_classes_hm64
     from .z64.o2r_import import unregister as unregister_z64_o2r_import
+    from .z64.scene import unregister as unregister_z64_scene
 
+    unregister_z64_scene()
     unregister_z64_o2r_import()
     unregister_z64_model_classes_hm64()
     unregister_z64_panels()
