@@ -1062,7 +1062,10 @@ LEVEL_HALVES = (("OPAQUE", "_OPA"), ("TRANSLUCENT", "_XLU"))
 
 
 def _material_half(material):
-    """The half a material's draw layer puts its faces in"""
+    """The half a material's faces go in, its own Level Half or else off its draw layer"""
+    chosen = getattr(material, "hm64_bk64_level_half", "LAYER") if material is not None else "LAYER"
+    if chosen != "LAYER":
+        return chosen
     layer = getattr(material, "hm64_bk64_draw_layer", "SCENE") if material is not None else "SCENE"
     return "TRANSLUCENT" if layer.startswith("TRANSLUCENT") else "OPAQUE"
 
@@ -1161,7 +1164,7 @@ def blank_half_object(context, mesh_objects, half: str, temp_objects):
     return blank
 
 
-def export_bk64_model(context, root_obj, settings, shapes=None, collision_only=None):
+def export_bk64_model(context, root_obj, settings, shapes=None, collision_only=None, png_folder=None):
     """Builds the whole resource family as {suffix: bytes}.
 
     Keys are "" for the model, then "_VTX", "_GEO" and "_tex_<i>".
@@ -1314,6 +1317,8 @@ def export_bk64_model(context, root_obj, settings, shapes=None, collision_only=N
         texture_resources, tex_infos, tex_blob, white_offset, animated_offsets = collect_textures(
             fModel, rom_format, folds, opaque_images, mip_images, animated
         )
+        if png_folder is not None:
+            fModel.save_textures(png_folder)
         slot_table = [(0, 0, 0.0)] * ANIM_TEX_SLOT_COUNT
         for image, (slot, frames, rate) in animated.items():
             offset, frame_bytes, count = animated_offsets[slot]

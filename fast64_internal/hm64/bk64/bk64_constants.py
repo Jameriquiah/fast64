@@ -86,7 +86,7 @@ GEO_CMD_REFPOINT = 0x0A
 GEO_CMD_SELECTOR = 0x0C
 GEO_CMD_DRAWDIST = 0x0D
 GEO_CMD_CULL = 0x0E  # a sphere the game tests before drawing what hangs off it
-GEO_CMD_CAMERA = 0x0F  # the areas what hangs off it draws inside, or outside with flag 2
+GEO_CMD_CAMERA = 0x0F  # bit 1 draws while the camera is outside every area listed, bit 2 while it is inside one
 GEO_CMD_TEXWRAP = 0x10  # 1 clamps the mipmap tiles that follow, 2 wraps them
 
 # Tooie's drawing commands and the sub-lists each one names, keyed by opcode
@@ -118,6 +118,14 @@ MESH_TAG_ATTRIBUTE = "bk64_mesh_tag"  # holds mesh membership through the part a
 # is the effect's parameter (core2 func_8034C6DC). For a scroll it is the speed.
 SCROLL_UID_BASE = 100
 MAX_SCROLL_SPEED = 99
+MESH_EFFECT_UID_BASE = {
+    "SCROLL": SCROLL_UID_BASE,
+    "FLICKER": 200,  # vtx/normalset.c never reads the parameter
+    "BOB": 300,  # vtx/alphablend.c reads it as the height of the rise
+    "GLOW": 500,
+    "WAVE": 700,  # vtx/scale.c reads it in tenths, and anything past 10 as 1.0
+    "ALPHA_GLOW": 800,
+}
 
 GEO_TYPE_MIPMAP_TRILINEAR = 0x02
 

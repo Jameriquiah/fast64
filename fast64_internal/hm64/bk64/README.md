@@ -49,7 +49,7 @@ Meshes must use F3D materials, as they do everywhere else in Fast64. If you have
 
 Shading comes from vertex color. The game loads no lights for a model. A vanilla model carries its shading baked into its vertices instead.
 
-The vertex color's alpha channel only reaches the output if the alpha combiner takes SHADE. "BK Vertex Colored Texture" holds alpha at 1, so painting that channel does nothing there. Use "BK Vertex Colored Texture Transparent", which takes shade alpha in the first cycle and scales it by the primitive color's alpha in the second, giving one fade control over the whole material. "BK Vertex Colored Texture Cutout" takes the texture's alpha instead, for foliage and railings that are vertex shaded.
+The vertex color's alpha channel only reaches the output if the alpha combiner takes SHADE. "BK Vertex Colored Texture" holds alpha at 1, so painting that channel does nothing there. Use "BK Vertex Colored Texture Transparent", which takes shade alpha in the first cycle and scales it by the primitive color's alpha in the second, giving one fade control over the whole material. "BK Vertex Colored Texture Cutout" takes the texture's alpha instead, for foliage and railings that are vertex shaded. "BK Vertex Colored Texture Cutout Transparent" takes both, for a cutout that also fades at its vertices.
 
 No preset sets a render mode, and none should. A chunk jumps into the render mode table the game builds instead, picked by its Draw Layer. Ticking Set Render Mode writes a mode into the display list after that jump, which overrides it and takes the actor's depth behavior away from the game.
 
@@ -191,9 +191,9 @@ A mesh list hands the game a set of vertex groups it animates by itself, with no
 
 You don't pick the effect, the game does, by number. A mesh is a vertex group named `bk64_mesh_<uid>`, any group named that way goes back out as one, and the uid is what the game looks it up by. Which uid gets which effect is decided in the game's own code, so a mesh of yours animates only if you give it a uid the map already drives. Anything else needs a port change, not an export setting.
 
-The uid carries the effect and its setting in one number. Which hundred it falls in picks the effect, and the rest is that effect's only parameter. Meshes 101 to 199 scroll their texture at a speed of uid minus 100. 200 to 299 flicker. 300 to 399 rise and fall, which is what water in a translucent half uses. The bands run to 1099, so anything above 399 is driven too.
+The uid carries the effect and its setting in one number. Which hundred it falls in picks the effect, and the rest is that effect's only parameter. Meshes 101 to 199 scroll their texture at a speed of uid minus 100. 200 to 299 flicker. 300 to 399 rise and fall, which is what water in a translucent half uses. 500 to 599 glow, 700 to 799 roll in waves, and 800 to 899 fade in and out. The bands run to 1099, and the rest are driven too.
 
-Scrolling is the one you can set up without touching the port. Select the faces in edit mode, set Scroll Speed, and press "Add Texture Scroll". Speed 20 is what Gobi's Valley uses for its sand. Only the vertical texture coordinate moves, so the texture slides one way rather than drifting. Banjo's Backpack calls this Scroll Texture, and its Slow, Normal and Fast are speeds 6, 20 and 60.
+Those six you can set up without touching the port. Select the faces in edit mode, pick the Effect and a Speed, and press "Add Mesh Effect". Speed 20 is what Gobi's Valley uses for its scrolling sand. Only the vertical texture coordinate moves, so the texture slides one way rather than drifting. Flicker ignores Speed, Bob reads it as how far the faces rise, and Wave runs from 1 to 10. Banjo's Backpack calls scrolling Scroll Texture, and its Slow, Normal and Fast are speeds 6, 20 and 60.
 
 Some uids are addresses for gameplay code rather than effects, and those you have to leave where they are. Gobi's Valley works out which sphinx tile Banjo is standing on by asking which mesh from 400 to 415 his position falls inside. Furnace Fun does the same from 401 to 495, and Mad Monster Mansion's shed and Treasure Trove Cove's castle ask over every mesh they have. Moving or renumbering one of those moves the region with it.
 
@@ -243,11 +243,13 @@ A level's camera gates come in with it, as wire objects in a `<name>_camera_area
 
 Level Half on the export panel is that tag, and it reads From Materials until you say otherwise. An object whose materials are all one layer goes to that half whole. One holding both is cut along them, its translucent faces to the translucent half and the rest to the opaque one, so a level that came in as a single mesh doesn't have to be separated by hand. The panel says what it worked out for whichever object you have selected. Then "Export Level Halves" writes both models in one go.
 
+A material can say otherwise. Level Half in the material tab reads From Draw Layer until you set it, and then sends that material's faces to the half you name. So a terrain material can fade at the world's edge and stay in the opaque half while the water beside it goes translucent, with no second copy of the material. It only applies while the object reads From Materials.
+
 A cut duplicates the vertices along the seam, because the two halves are separate models with their own vertex lists and nothing can be shared between them. Vertex groups come through it, so a mesh list spanning the boundary keeps its vertices on both sides.
 
 Set Level Half outright to override the reading, and expect to for a vanilla level. Most of them keep translucent materials in their opaque half, where a face blends and still writes depth, so rebuilding one to its original layout means placing the halves yourself. From Materials sends those faces to the translucent half instead, which is the usual choice for glass and water in a level of your own. A level brought in with Halves set to Both is tagged outright and reads nothing off its materials.
 
-The naming is handled for you. A level of your own gets `_OPA` and `_XLU` on the end of its Resource Path. A vanilla level gets the two names the port loads it by, and those differ by more than the suffix: Gobi's Valley is `ASSET_1474_GV_GOBIS_VALLEY_OPA` and `ASSET_1475_GV_GOBIS_VALLEY_XLU`. Point Resource Path at either one and both come out right.
+The naming is handled for you. A level of your own gets `_OPA` and `_XLU` on the end of its Resource Path. A vanilla level gets the two names the port loads it by, and those differ by more than the suffix: Gobi's Valley is `ASSET_1474_GV_GOBIS_VALLEY_OPA` and `ASSET_1475_GV_GOBIS_VALLEY_XLU`. Point Resource Path at either one and both come out right. The decomp's names work the same way: `1474.model` writes `1474.model` and `1475.model`, for its `assets/model` folder.
 
 Both halves go out every time, even an empty one, so replacing a level can't leave its old half standing. A half you gave no geometry is written as a model that draws nothing. An opaque only level still gets a translucent model, named from its own asset, for a hack meaning to add one. The map only draws it once its scene definition names an xlu asset.
 
@@ -272,6 +274,10 @@ Format sets what is written, for animations as well as models. O2R writes the re
 Textures are written differently for a `.bin`, because nothing outside the game reproduces the game's own shading. Fast64 materials keep their color in the light and let the combiner fold it into the texture. For a `.bin` the export bakes that fold into the pixels and leaves the vertex color neutral. Both of the shaded-texture setups Fast64 writes are handled: a flat tint, and the decal setup where the texture's alpha picks between a base color and the detail painted over it. A material that combines them some other way keeps its texture and vertex color unchanged.
 
 A `.bin` takes RGBA16, RGBA32, CI4 and CI8, the four types the game's own header names. An o2r texture list also carries IA8, which is the format Lightning's animated frames are stored in.
+
+Every `.bin` ends its texture list with an 8x8 white RGBA16. Faces with no texture of their own are bound to it, since the combiner still samples one.
+
+Save Textures As PNGs, in the F3D Global Settings, writes each texture into Export Folder as a PNG as well. The warning in its label is about C exports and doesn't apply here.
 
 The exporter writes loose resources into Export Folder. Turn that folder into an archive with Torch's packer. It zips the folder as it is, and the folder layout becomes the archive layout:
 

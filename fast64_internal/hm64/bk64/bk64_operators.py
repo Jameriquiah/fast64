@@ -14,9 +14,9 @@ from .bk64_constants import (
     COLLISION_ONLY_PROP,
     GEO_TYPE_ENV_MAP,
     GEO_TYPE_MIPMAP_TRILINEAR,
+    MESH_EFFECT_UID_BASE,
     MESH_GROUP_PREFIX,
     MODEL_STASH_PROPS,
-    SCROLL_UID_BASE,
     SHAPE_KIND,
 )
 from .bk64_import import import_bk64_model
@@ -113,7 +113,8 @@ class BK64_ExportModel(Operator):
 
                 shapes = read_collision_shapes(root_obj, settings.scale)
                 collision_only = read_collision_only(context, root_obj, settings.scale)
-                resources = export_bk64_model(context, root_obj, settings, shapes, collision_only)
+                png_folder = export_dir if scene.saveTextures else None
+                resources = export_bk64_model(context, root_obj, settings, shapes, collision_only, png_folder)
 
                 extension = ".bin" if settings.file_format == "BIN" else ""
                 for suffix, data in resources.items():
@@ -226,7 +227,8 @@ class BK64_ExportLevelHalves(Operator):
                     settings.name = paths[layer]
                     shapes = read_collision_shapes(holder, settings.scale)
                     collision_only = read_collision_only(context, holder, settings.scale)
-                    resources = export_bk64_model(context, holder, settings, shapes, collision_only)
+                    png_folder = export_dir if scene.saveTextures else None
+                    resources = export_bk64_model(context, holder, settings, shapes, collision_only, png_folder)
                     for res_suffix, data in resources.items():
                         path = os.path.join(export_dir, settings.name + res_suffix + extension)
                         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -405,11 +407,12 @@ class BK64_SplitMeshAtBones(Operator):
             return {"CANCELLED"}
 
 
-class BK64_AddTextureScroll(Operator):
-    bl_idname = "object.hm64_bk64_add_texture_scroll"
-    bl_label = "Add Texture Scroll"
+class BK64_AddMeshEffect(Operator):
+    bl_idname = "object.hm64_bk64_add_mesh_effect"
+    bl_label = "Add Mesh Effect"
     bl_description = (
-        "Make the selected faces scroll their texture. Select them in edit mode first, and set the " "speed above"
+        "Have the game animate the selected faces. Select them in edit mode first, and pick the effect "
+        "and speed above"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -417,22 +420,23 @@ class BK64_AddTextureScroll(Operator):
         try:
             mesh_obj = context.object
             if mesh_obj is None or mesh_obj.type != "MESH":
-                raise PluginError("Select the mesh holding the faces to scroll.")
+                raise PluginError("Select the mesh holding the faces to animate.")
 
+            effect = context.scene.hm64_bk64_mesh_effect
             speed = context.scene.hm64_bk64_scroll_speed
             # edit mode keeps the selection in a bmesh of its own, object mode is where it lands
             with object_mode(context):
                 chosen = [vertex.index for vertex in mesh_obj.data.vertices if vertex.select]
                 if not chosen:
-                    raise PluginError("No vertices selected. Pick the faces to scroll in edit mode.")
+                    raise PluginError("No vertices selected. Pick the faces to animate in edit mode.")
 
-                name = f"{MESH_GROUP_PREFIX}{SCROLL_UID_BASE + speed}"
+                name = f"{MESH_GROUP_PREFIX}{MESH_EFFECT_UID_BASE[effect] + speed}"
                 group = mesh_obj.vertex_groups.get(name) or mesh_obj.vertex_groups.new(name=name)
                 group.add(chosen, 1.0, "REPLACE")
 
             self.report(
                 {"INFO"},
-                f"{len(chosen)} vertices scroll at {speed}, as '{name}'. The number in the name is the speed.",
+                f"{len(chosen)} vertices in '{name}'. The number in the name is the effect's hundred plus the speed.",
             )
             return {"FINISHED"}
 
@@ -746,7 +750,7 @@ bk64_operator_classes = (
     BK64_ExportAllAnimations,
     BK64_PromoteMaterials,
     BK64_SplitMeshAtBones,
-    BK64_AddTextureScroll,
+    BK64_AddMeshEffect,
     BK64_SelectLooseVertices,
     BK64_MarkCollisionOnly,
     BK64_ImportSkeleton,

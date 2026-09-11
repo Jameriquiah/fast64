@@ -8,7 +8,7 @@ from ...utility import prop_split
 from .bk64_constants import BK_COLLISION_FLAG_BITS
 from .bk64_model import in_level_half, level_half_faces
 from .bk64_operators import (
-    BK64_AddTextureScroll,
+    BK64_AddMeshEffect,
     BK64_ExportAllAnimations,
     BK64_ImportAnimation,
     BK64_ExportAnimation,
@@ -136,7 +136,7 @@ class BK64_ImportModelPanel(BK64_Panel):
         box.label(text="Import BK Model brings in the mesh, textures and armature.")
         box.label(text="Import BK Skeleton takes only the bones, ids included, so a")
         box.label(text="replacement accepts the original's animations.")
-        box.label(text="Both need the _GEO, _VTX and _tex siblings in the same folder.")
+        box.label(text="An o2r model needs its _GEO, _VTX and _tex siblings beside it.")
         box.label(text="For a level use Import BK Level below, a level is two models.")
 
         col.separator()
@@ -167,14 +167,15 @@ class BK64_MeshToolsPanel(BK64_Panel):
         col.operator(BK64_MarkCollisionOnly.bl_idname)
 
         col.separator()
-        prop_split(col, scene, "hm64_bk64_scroll_speed", "Scroll Speed")
-        col.operator(BK64_AddTextureScroll.bl_idname)
+        prop_split(col, scene, "hm64_bk64_mesh_effect", "Effect")
+        prop_split(col, scene, "hm64_bk64_scroll_speed", "Speed")
+        col.operator(BK64_AddMeshEffect.bl_idname)
 
         box = col.box().column()
         box.label(text="These change the mesh you have selected, not the export.")
         box.label(text="Collision Only makes a mesh an invisible floor or wall.")
-        box.label(text="Pick the faces in edit mode before Add Texture Scroll.")
-        box.label(text="Only the vertical direction moves, and only on a level.")
+        box.label(text="Pick the faces in edit mode before Add Mesh Effect.")
+        box.label(text="Scroll only moves vertically, and effects only run on a level.")
 
 
 class BK64_BonePanel(BK64_Panel):
@@ -222,6 +223,7 @@ class BK64_MaterialPanel(BK64_Panel):
         col = self.layout.column()
         material = context.material
         prop_split(col, material, "hm64_bk64_draw_layer", "Draw Layer")
+        prop_split(col, material, "hm64_bk64_level_half", "Level Half")
 
         prop_split(col, material, "hm64_bk64_anim_tex", "Animated Texture")
         if material.hm64_bk64_anim_tex != "NONE":
